@@ -1,80 +1,117 @@
-use core::slice;
-use std::{array, fs::File, io::Read, mem, slice::from_raw_parts_mut};
+use std::io::{Read, BufReader, BufRead};
+use chrono::{DateTime, NaiveDateTime, Duration, Utc};
+use std::fs::{OpenOptions, File};
+use byteorder::{LittleEndian, ByteOrder};
 
-#[repr(packed(1))]
+use crate::{mdt_struct::SZSEL2_Quotation, observer::{Observer, Observerable}};
+
+/// dat 头结构
+#[repr(align(1))]
 pub struct Header {
-    total_len: i16,
-    data_type: i32,
-    data_len: i16
-}
+    // 2 bytes
+    total_len: u16,
+    // 4 bytes
+    r#type: u32,
+    // 2 bytes
+    data_len: u16,
+} // 8 bytes
 
-#[repr(packed(8))]
-pub struct SZSEL2_Status {
-    mdt_time: u64,
-    symbol: [char; 40],
-    symbol_source: [char; 5],
-    time: i64,
-    financial_status: [char; 8],
-    crd_buy_status: char,
-    crd_sell_status: char,
-    subscribe_status: char,
-    redemption_status: char,
-    purchasing_staus: char,
-    stock_divi_status: char,
-    putable_status: char,
-    exercise_status: char,
-    gold_purchase: char,
-    gold_redemption: char,
-    accepted_status: char,
-    release_status: char,
-    canc_stock_divi_status: char,
-    pledge_status: char,
-    remove_pledge: char,
-    vote_status: char,
-    stock_pledge_repo: char,
-    divide_status: char,
-    merger_status: char
-}
-
-
-pub struct Reader {
-    file: File
-}
-
-impl Reader {
-    pub fn new(fp: &str) -> Reader {
-        Self {
-            file: File::open(fp).expect(
-                format!("read file {} failed", fp).as_str()
-            )
+impl Header {
+    fn load<T: Read>(reader: &mut T) -> Header {
+        Header {
+            total_len: LittleEndian::read_u16(&Dat::read_part(reader, 2)),
+            r#type: LittleEndian::read_u32(&Dat::read_part(reader, 4)),
+            data_len: LittleEndian::read_u16(&Dat::read_part(reader, 2)),
         }
     }
+}
 
-    fn read_head(&mut self, head: &mut Header, head_size: usize) {
-        unsafe {
-            let head_slice = slice::from_raw_parts_mut(head as *mut _ as *mut u8, head_size);
-            self.file.read_exact(head_slice).unwrap();
+pub struct Item {
+    pub(crate) data_len: u16,
+    pub(crate) data_type: u32,
+    pub(crate) data: Vec<u8>,
+}
+
+pub struct Dat {
+    buffer_reader: BufReader<File>,
+    obj: Box<dyn Observer>,
+}
+
+impl Dat {
+
+    ///
+    /// # Arguments
+    ///
+    /// `filepath` - dat 文件路径
+    /// `callback` - callback function
+    pub fn new(filepath: &str, callback: Box<dyn Observer>) -> Self {
+        let file = OpenOptions::new()
+            .read(true)
+            .open(filepath)
+            .expect("Unable to open file");
+
+        let buffer_reader = BufReader::new(file);
+
+        Self {
+            buffer_reader,
+            obj: callback
         }
     }
 
     pub fn read(&mut self) {
-        let mut head: Header = unsafe { mem::zeroed() };
-        let head_size = mem::size_of::<Header>();
+        while self.buffer_reader.fill_buf().unwrap().len() > 0 {
+            let h = Header::load(&mut self.buffer_reader);
+            let buf = Dat::read_part(&mut self.buffer_reader, h.data_len as i32);
+            let item = Item {
+                data_len: h.data_len,
+                data_type: h.r#type,
+                data: buf,
+            };
 
-        self.read_head(&mut head, head_size);
-        println!("total_size:{}\ndata_type:{}\ndata_size:{}", {head.total_len}, {head.data_type}, {head.data_len});
-
-        let mut status: SZSEL2_Status = unsafe {mem::zeroed()};
-        // let status_size = mem::size_of::<Header>();
-        unsafe {
-            let data_slice = slice::from_raw_parts_mut(&mut status as *mut _ as *mut u8, head.data_len as usize);
-            self.file.read_exact(data_slice).unwrap();
+            //self.obj.send(item)
         }
+    }
 
-        // let s: String = status.symbol.iter().collect();
-        let s: String = status.symbol.iter().collect();
-        println!("symbol:{}, time:{}", s.as_str(), status.mdt_time);
+    /// 从reader读取size大小的数据
+    ///
+    /// # Arguments
+    ///
+    /// `reader` - BufReader
+    /// `size` - The byte size of data read
+    fn read_part<T: Read>(reader: &mut T, size: i32) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(size as usize);
+        let mut part_reader = reader.take(size as u64);
+        part_reader.read_to_end(&mut buf).unwrap();
+        buf
+    }
 
+    /// timestamp 转换为 datetime
+    ///
+    /// # Arguments
+    ///
+    /// `timestamp` - 待转换的时间戳
+    pub fn ts_to_datetime(timestamp: i64) -> DateTime<Utc> {
+        let ts_nsec = timestamp % 1_000_000 * 1000;
+        let naive = NaiveDateTime::from_timestamp(timestamp / 1_000_000, ts_nsec as u32);
+        let datetime = DateTime::<Utc>::from_utc(naive, Utc);
+        datetime + Duration::hours(8) // 东八区
+    }
+
+    fn on_item(item: Item) {
+        todo!()
     }
 }
 
+impl Observerable for Dat {
+    fn register_observer(&mut self, obj: Box<dyn Observer>) {
+        todo!()
+    }
+
+    fn remove_observer(&mut self, index: usize) {
+        todo!()
+    }
+
+    fn notify_observer(&self) {
+        todo!()
+    }
+}
